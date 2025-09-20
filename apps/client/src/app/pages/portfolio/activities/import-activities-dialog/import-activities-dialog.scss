@@ -54,6 +54,44 @@
         }
       }
     }
+
+    .mapping-grid {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    }
+
+    .mapping-warning {
+      background-color: rgba(var(--palette-warning-500), 0.12);
+      border-radius: 0.25rem;
+      color: rgba(var(--palette-warning-700), 1);
+      padding: 0.75rem 1rem;
+    }
+
+    .mapping-preview {
+      overflow-x: auto;
+
+      table {
+        border-collapse: collapse;
+        min-width: 100%;
+
+        th,
+        td {
+          border: 1px solid
+            rgba(
+              var(--palette-foreground-divider),
+              var(--palette-foreground-divider-alpha)
+            );
+          padding: 0.5rem;
+          text-align: left;
+          white-space: nowrap;
+        }
+
+        thead {
+          background: rgba(var(--palette-foreground-base), 0.06);
+        }
+      }
+    }
   }
 }
 

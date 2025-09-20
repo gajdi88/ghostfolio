@@ -1,4 +1,5 @@
 export enum ImportStep {
   UPLOAD_FILE = 0,
-  SELECT_ACTIVITIES = 1
+  MAP_COLUMNS = 1,
+  SELECT_ACTIVITIES = 2
 }

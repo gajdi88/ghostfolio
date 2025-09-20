@@ -49,6 +49,8 @@ import { cloudUploadOutline, warningOutline } from 'ionicons/icons';
 import { isArray, sortBy } from 'lodash';
 import ms from 'ms';
 import { DeviceDetectorService } from 'ngx-device-detector';
+import { parse as csvToJson } from 'papaparse';
+import type { ParseResult } from 'papaparse';
 import { Subject, takeUntil } from 'rxjs';
 
 import { ImportStep } from './enums/import-step';
@@ -80,8 +82,69 @@ import { ImportActivitiesDialogParams } from './interfaces/interfaces';
 export class GfImportActivitiesDialog implements OnDestroy {
   public accounts: CreateAccountWithBalancesDto[] = [];
   public activities: Activity[] = [];
+  public columnMappingForm: FormGroup;
   public assetProfileForm: FormGroup;
   public assetProfiles: CreateAssetProfileWithMarketDataDto[] = [];
+  public columnMappingDefinitions: {
+    hint?: string;
+    key: string;
+    label: string;
+    required: boolean;
+  }[] = [
+    {
+      key: 'date',
+      label: $localize`Activity Date`,
+      required: true
+    },
+    {
+      key: 'type',
+      label: $localize`Activity Type`,
+      required: true,
+      hint: $localize`Accepted values: buy, sell, dividend, fee, interest, liability`
+    },
+    {
+      key: 'symbol',
+      label: $localize`Symbol`,
+      required: true
+    },
+    {
+      key: 'quantity',
+      label: $localize`Quantity`,
+      required: true
+    },
+    {
+      key: 'unitprice',
+      label: $localize`Unit Price`,
+      required: true
+    },
+    {
+      key: 'fee',
+      label: $localize`Fee`,
+      required: true,
+      hint: $localize`Use 0 if your CSV has no fee column`
+    },
+    {
+      key: 'currency',
+      label: $localize`Currency`,
+      required: true
+    },
+    {
+      key: 'datasource',
+      label: $localize`Data Source`,
+      required: false,
+      hint: $localize`Optional – map when the file includes the original data provider`
+    },
+    {
+      key: 'account',
+      label: $localize`Account`,
+      required: false
+    },
+    {
+      key: 'comment',
+      label: $localize`Comment`,
+      required: false
+    }
+  ];
   public dataSource: MatTableDataSource<Activity>;
   public details: any[] = [];
   public deviceType: string;
@@ -92,14 +155,32 @@ export class GfImportActivitiesDialog implements OnDestroy {
   public isLoading = false;
   public maxSafeInteger = Number.MAX_SAFE_INTEGER;
   public mode: 'DIVIDEND';
+  public ImportStepEnum = ImportStep;
+  public csvColumns: string[] = [];
+  public csvPreviewRows: Record<string, unknown>[] = [];
+  public isCsvUpload = false;
+  public mappingErrorMessage: string;
   public selectedActivities: Activity[] = [];
   public sortColumn = 'date';
   public sortDirection: SortDirection = 'desc';
   public stepperOrientation: StepperOrientation;
   public tags: CreateTagDto[] = [];
   public totalItems: number;
+  private pendingCsvFileContent: string;
 
   private unsubscribeSubject = new Subject<void>();
+  private columnSynonymMap: Record<string, string[]> = {
+    account: ['account', 'account id', 'accountid'],
+    comment: ['comment', 'note', 'notes'],
+    currency: ['currency', 'ccy', 'currency primary'],
+    datasource: ['datasource', 'data source'],
+    date: ['date', 'trade date', 'transaction date'],
+    fee: ['fee', 'commission', 'ib commission'],
+    quantity: ['quantity', 'qty', 'units', 'shares'],
+    symbol: ['symbol', 'ticker', 'code'],
+    type: ['type', 'action', 'buy/sell'],
+    unitprice: ['unit price', 'unitprice', 'price', 'trade price', 'value']
+  };
 
   public constructor(
     private changeDetectorRef: ChangeDetectorRef,
@@ -213,11 +294,7 @@ export class GfImportActivitiesDialog implements OnDestroy {
   }
 
   public onImportStepChange(event: StepperSelectionEvent) {
-    if (event.selectedIndex === ImportStep.UPLOAD_FILE) {
-      this.importStep = ImportStep.UPLOAD_FILE;
-    } else if (event.selectedIndex === ImportStep.SELECT_ACTIVITIES) {
-      this.importStep = ImportStep.SELECT_ACTIVITIES;
-    }
+    this.importStep = event.selectedIndex as ImportStep;
   }
 
   public onLoadDividends(aStepper: MatStepper) {
@@ -247,10 +324,18 @@ export class GfImportActivitiesDialog implements OnDestroy {
   public onReset(aStepper: MatStepper) {
     this.details = [];
     this.errorMessages = [];
-    this.importStep = ImportStep.SELECT_ACTIVITIES;
-    this.assetProfileForm.get('assetProfileIdentifier').enable();
+    if (this.isCsvUpload) {
+      this.importStep = ImportStep.MAP_COLUMNS;
+      this.selectedActivities = [];
+      aStepper.selectedIndex = ImportStep.MAP_COLUMNS;
+    } else {
+      this.importStep = ImportStep.UPLOAD_FILE;
+      this.clearCsvMappingState();
+      this.assetProfileForm.get('assetProfileIdentifier').enable();
+      aStepper.reset();
+    }
 
-    aStepper.reset();
+    this.changeDetectorRef.markForCheck();
   }
 
   public onSelectFile(stepper: MatStepper) {
@@ -273,9 +358,128 @@ export class GfImportActivitiesDialog implements OnDestroy {
     });
   }
 
+  public onBackToFileSelection(stepper: MatStepper) {
+    this.importStep = ImportStep.UPLOAD_FILE;
+    this.clearCsvMappingState();
+    stepper.reset();
+    this.changeDetectorRef.markForCheck();
+  }
+
   public ngOnDestroy() {
     this.unsubscribeSubject.next();
     this.unsubscribeSubject.complete();
+  }
+
+  public onApplyColumnMapping(stepper: MatStepper) {
+    if (!this.columnMappingForm?.valid) {
+      this.columnMappingForm.markAllAsTouched();
+      return;
+    }
+
+    this.mappingErrorMessage = undefined;
+    this.errorMessages = [];
+    this.details = [];
+    const mapping = this.getHeaderMappingFromForm();
+
+    this.snackBar.open('⏳ ' + $localize`Parsing data...`);
+
+    this.importActivitiesService
+      .importCsv({
+        columnMapping: mapping,
+        fileContent: this.pendingCsvFileContent,
+        isDryRun: true,
+        userAccounts: this.data.user.accounts
+      })
+      .then(({ activities }) => {
+        this.activities = activities;
+        this.dataSource = new MatTableDataSource(activities.reverse());
+        this.totalItems = activities.length;
+        this.importStep = ImportStep.SELECT_ACTIVITIES;
+        stepper.next();
+        this.updateSelection(this.activities);
+      })
+      .catch((error) => {
+        console.error(error);
+        this.mappingErrorMessage =
+          error?.error?.message?.[0] ??
+          error?.message ??
+          $localize`Unexpected format`;
+        this.errorMessages = error?.error?.message ?? [];
+      })
+      .finally(() => {
+        this.snackBar.dismiss();
+        this.changeDetectorRef.markForCheck();
+      });
+  }
+
+  private buildColumnMappingForm(columns: string[]) {
+    const formConfig: Record<string, any[]> = {};
+    const usedColumns = new Set<string>();
+
+    for (const definition of this.columnMappingDefinitions) {
+      const defaultColumn = this.findDefaultColumnForKey(
+        definition.key,
+        columns,
+        usedColumns
+      );
+
+      formConfig[definition.key] = [
+        defaultColumn ?? '',
+        definition.required ? [Validators.required] : []
+      ];
+
+      if (defaultColumn) {
+        usedColumns.add(defaultColumn);
+      }
+    }
+
+    this.columnMappingForm = this.formBuilder.group(formConfig);
+  }
+
+  private findDefaultColumnForKey(
+    key: string,
+    columns: string[],
+    usedColumns: Set<string>
+  ) {
+    const synonyms = this.columnSynonymMap[key] ?? [];
+    const normalisedSynonyms = synonyms.map((synonym) => {
+      return synonym.toLowerCase();
+    });
+
+    return columns.find((column) => {
+      if (!column || usedColumns.has(column)) {
+        return false;
+      }
+
+      const normalisedColumn = column.trim().toLowerCase();
+
+      return normalisedSynonyms.some((synonym) => {
+        return (
+          normalisedColumn === synonym || normalisedColumn.includes(synonym)
+        );
+      });
+    });
+  }
+
+  private getHeaderMappingFromForm() {
+    const mapping: Record<string, string> = {};
+
+    Object.entries(this.columnMappingForm.value).forEach(([key, value]) => {
+      if (value) {
+        mapping[key] = value as string;
+      }
+    });
+
+    return mapping;
+  }
+
+  private clearCsvMappingState() {
+    this.pendingCsvFileContent = undefined;
+    this.csvColumns = [];
+    this.csvPreviewRows = [];
+    this.columnMappingForm = undefined;
+    this.isCsvUpload = false;
+    this.mappingErrorMessage = undefined;
   }
 
   private async handleFile({
@@ -296,6 +500,12 @@ export class GfImportActivitiesDialog implements OnDestroy {
       const fileExtension = file.name.split('.').pop()?.toLowerCase();
 
       try {
+        this.isCsvUpload = false;
+        this.pendingCsvFileContent = undefined;
+        this.csvColumns = [];
+        this.csvPreviewRows = [];
+        this.columnMappingForm = undefined;
+        this.mappingErrorMessage = undefined;
         if (fileExtension === 'json') {
           const content = JSON.parse(fileContent);
 
@@ -346,28 +556,39 @@ export class GfImportActivitiesDialog implements OnDestroy {
 
           return;
         } else if (fileExtension === 'csv') {
-          const content = fileContent.split('\n').slice(1);
-
           try {
-            const data = await this.importActivitiesService.importCsv({
-              fileContent,
-              isDryRun: true,
-              userAccounts: this.data.user.accounts
+            const parsed = csvToJson(fileContent, {
+              header: true,
+              skipEmptyLines: true
+            }) as ParseResult<Record<string, unknown>>;
+
+            this.pendingCsvFileContent = fileContent;
+            this.csvColumns = (parsed.meta?.fields ?? []).filter((field) => {
+              return !!field;
             });
-            this.activities = data.activities;
-            this.dataSource = new MatTableDataSource(data.activities.reverse());
-            this.totalItems = data.activities.length;
+            this.csvPreviewRows = (parsed.data ?? []).slice(0, 5);
+            this.isCsvUpload = true;
+            this.activities = [];
+            this.dataSource = undefined;
+            this.totalItems = undefined;
+            this.errorMessages = [];
+            this.details = [];
+            this.mappingErrorMessage = undefined;
+            this.buildColumnMappingForm(this.csvColumns);
+
+            this.importStep = ImportStep.MAP_COLUMNS;
+            stepper.next();
+            return;
           } catch (error) {
             console.error(error);
             this.handleImportError({
-              activities: error?.activities ?? content,
+              activities: [],
               error: {
-                error: { message: error?.error?.message ?? [error?.message] }
+                error: { message: [error?.message ?? 'Unexpected format'] }
               }
             });
+            return;
           }
-
-          return;
         }
 
         throw new Error();
@@ -378,11 +599,12 @@ export class GfImportActivitiesDialog implements OnDestroy {
           error: { error: { message: ['Unexpected format'] } }
         });
       } finally {
-        this.importStep = ImportStep.SELECT_ACTIVITIES;
+        if (!this.isCsvUpload) {
+          this.importStep = ImportStep.SELECT_ACTIVITIES;
+          stepper.selectedIndex = ImportStep.SELECT_ACTIVITIES;
+        }
         this.snackBar.dismiss();
         this.updateSelection(this.activities);
-
-        stepper.next();
 
         this.changeDetectorRef.markForCheck();
       }

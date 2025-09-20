@@ -13,7 +13,7 @@
     [selectedIndex]="importStep"
     (selectionChange)="onImportStepChange($event)"
   >
-    <mat-step [completed]="importStep === 0">
+    <mat-step [completed]="importStep > ImportStepEnum.UPLOAD_FILE">
       <ng-template matStepLabel>
         @if (mode === 'DIVIDEND') {
           <ng-container i18n>Select Holding</ng-container>
@@ -106,7 +106,105 @@
       </div>
     </mat-step>
 
-    <mat-step [completed]="importStep === 1">
+    @if (mode !== 'DIVIDEND') {
+      <mat-step [completed]="importStep > ImportStepEnum.MAP_COLUMNS">
+        <ng-template matStepLabel>
+          <ng-container i18n>Map Columns</ng-container>
+        </ng-template>
+        <div class="pt-3">
+          @if (isCsvUpload && columnMappingForm) {
+            <form [formGroup]="columnMappingForm">
+              <div class="mapping-grid">
+                @for (
+                  definition of columnMappingDefinitions;
+                  track definition.key
+                ) {
+                  <mat-form-field appearance="outline" class="w-100">
+                    <mat-label>{{ definition.label }}</mat-label>
+                    <mat-select
+                      [formControlName]="definition.key"
+                      [required]="definition.required"
+                    >
+                      <mat-option value="">
+                        <ng-container i18n>Not mapped</ng-container>
+                      </mat-option>
+                      @for (column of csvColumns; track column) {
+                        <mat-option [value]="column">{{ column }}</mat-option>
+                      }
+                    </mat-select>
+                    @if (definition.hint) {
+                      <mat-hint>{{ definition.hint }}</mat-hint>
+                    }
+                    @if (
+                      columnMappingForm.get(definition.key)?.invalid &&
+                      columnMappingForm.get(definition.key)?.touched
+                    ) {
+                      <mat-error>
+                        <ng-container i18n
+                          >Please select a column.</ng-container
+                        >
+                      </mat-error>
+                    }
+                  </mat-form-field>
+                }
+              </div>
+            </form>
+            @if (mappingErrorMessage) {
+              <div class="mapping-warning mt-3">
+                {{ mappingErrorMessage }}
+              </div>
+            }
+            @if (csvPreviewRows?.length) {
+              <div class="mapping-preview mt-3">
+                <table>
+                  <thead>
+                    <tr>
+                      @for (column of csvColumns; track column) {
+                        <th>{{ column }}</th>
+                      }
+                    </tr>
+                  </thead>
+                  <tbody>
+                    @for (
+                      row of csvPreviewRows;
+                      track rowIndex;
+                      let rowIndex = $index
+                    ) {
+                      <tr>
+                        @for (column of csvColumns; track column) {
+                          <td>{{ row[column] ?? '' }}</td>
+                        }
+                      </tr>
+                    }
+                  </tbody>
+                </table>
+              </div>
+            }
+          }
+          <div class="d-flex justify-content-end mt-3">
+            <button
+              mat-button
+              type="button"
+              (click)="onBackToFileSelection(stepper)"
+            >
+              <ng-container i18n>Back</ng-container>
+            </button>
+            <button
+              class="ml-1"
+              color="primary"
+              mat-flat-button
+              type="button"
+              [disabled]="!columnMappingForm?.valid"
+              (click)="onApplyColumnMapping(stepper)"
+            >
+              <ng-container i18n>Continue</ng-container>
+            </button>
+          </div>
+        </div>
+      </mat-step>
+    }
+
+    <mat-step [completed]="importStep >= ImportStepEnum.SELECT_ACTIVITIES">
       <ng-template matStepLabel>
         @if (mode === 'DIVIDEND') {
           <ng-container i18n>Select Dividends</ng-container>
@@ -116,7 +214,7 @@
       </ng-template>
       <div class="pt-3">
         @if (errorMessages?.length === 0) {
-          @if (importStep === 1) {
+          @if (importStep === ImportStepEnum.SELECT_ACTIVITIES) {
             <gf-activities-table
               [baseCurrency]="data?.user?.settings?.baseCurrency"
               [dataSource]="dataSource"

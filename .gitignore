@@ -38,6 +38,8 @@ npm-debug.log
 /libpeerconnection.log
 testem.log
 /typings
+*.csv
+.vscode/
 
 # System Files
 .DS_Store

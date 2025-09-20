@@ -32,24 +32,42 @@ export class ImportActivitiesService {
     'unitprice',
     'value'
   ];
+  private static CANONICAL_HEADER_MAP: Record<string, string> = {
+    account: 'account',
+    comment: 'comment',
+    currency: 'currency',
+    datasource: 'datasource',
+    date: 'date',
+    fee: 'fee',
+    quantity: 'quantity',
+    symbol: 'symbol',
+    type: 'type',
+    unitprice: 'unitprice'
+  };
 
   public constructor(private http: HttpClient) {}
 
   public async importCsv({
     fileContent,
     isDryRun = false,
-    userAccounts
+    userAccounts,
+    columnMapping
   }: {
+    columnMapping?: Record<string, string>;
     fileContent: string;
     isDryRun?: boolean;
     userAccounts: Account[];
   }): Promise<{
     activities: Activity[];
   }> {
+    const headerMap = this.buildHeaderMap(columnMapping);
     const content = csvToJson(fileContent, {
       dynamicTyping: true,
       header: true,
-      skipEmptyLines: true
+      skipEmptyLines: true,
+      transformHeader: (header) => {
+        return this.transformHeader(header, headerMap);
+      }
     }).data;
 
     const activities: CreateOrderDto[] = [];
@@ -174,6 +192,37 @@ export class ImportActivitiesService {
       acc[key.toLowerCase()] = aObject[key];
       return acc;
     }, {});
+  }
+
+  private normalizeHeader(header: string) {
+    return header?.trim().toLowerCase();
+  }
+
+  private buildHeaderMap(columnMapping?: Record<string, string>) {
+    if (!columnMapping) {
+      return {};
+    }
+
+    return Object.entries(columnMapping).reduce(
+      (acc: Record<string, string>, [targetKey, sourceHeader]) => {
+        const canonicalHeader =
+          ImportActivitiesService.CANONICAL_HEADER_MAP[targetKey];
+        const normalisedSourceHeader = this.normalizeHeader(sourceHeader);
+
+        if (canonicalHeader && normalisedSourceHeader) {
+          acc[normalisedSourceHeader] = canonicalHeader;
+        }
+
+        return acc;
+      },
+      {}
+    );
+  }
+
+  private transformHeader(header: string, headerMap: Record<string, string>) {
+    const normalisedHeader = this.normalizeHeader(header);
+
+    return headerMap[normalisedHeader] ?? header;
   }
 
   private parseAccount({
